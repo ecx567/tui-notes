@@ -734,6 +734,17 @@ func (m Model) handleFileExplorerInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	var cmd tea.Cmd
 
 	switch msg.String() {
+	case "backspace":
+		if m.SearchInput.Value() == "" {
+			parent := filepath.Dir(m.CurrentPath)
+			if parent != m.CurrentPath {
+				m.CurrentPath = parent
+				m.FileCursor = 0
+				m.FileScroll = 0
+				return m, m.loadFilesCmd()
+			}
+			return m, nil
+		}
 	case "up":
 		if m.FileCursor > 0 {
 			m.FileCursor--
