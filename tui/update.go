@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sahilm/fuzzy"
 )
 
 // ─── Update ──────────────────────────────────────────────────────────────────
@@ -857,26 +858,43 @@ func (m Model) loadFilesCmd() tea.Cmd {
 			return errMsg{err}
 		}
 		
-		query := strings.ToLower(m.SearchInput.Value())
+		query := strings.TrimSpace(m.SearchInput.Value())
 		
 		var dirs []os.DirEntry
 		var files []os.DirEntry
-		for _, e := range entries {
-			// Skip if it doesn't match query (unless query is a path separator)
-			if query != "" && !strings.Contains(query, string(os.PathSeparator)) && !strings.Contains(query, "/") {
-				if !strings.Contains(strings.ToLower(e.Name()), query) {
-					continue
+
+		if query == "" || strings.Contains(query, string(os.PathSeparator)) || strings.Contains(query, "/") {
+			for _, e := range entries {
+				if e.IsDir() {
+					dirs = append(dirs, e)
+				} else {
+					files = append(files, e)
 				}
 			}
-			
+			return filesLoadedMsg{files: append(dirs, files...)}
+		}
+
+		// Fuzzy search
+		var entryNames []string
+		for _, e := range entries {
+			entryNames = append(entryNames, e.Name())
+		}
+
+		// We need to import "github.com/sahilm/fuzzy"
+		matches := fuzzy.Find(query, entryNames)
+
+		var matchedEntries []os.DirEntry
+		for _, match := range matches {
+			e := entries[match.Index]
 			if e.IsDir() {
 				dirs = append(dirs, e)
 			} else {
 				files = append(files, e)
 			}
 		}
-		
-		return filesLoadedMsg{files: append(dirs, files...)}
+
+		matchedEntries = append(dirs, files...)
+		return filesLoadedMsg{files: matchedEntries}
 	}
 }
 

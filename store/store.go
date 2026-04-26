@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sahilm/fuzzy"
 )
 
 type Note struct {
@@ -196,20 +198,34 @@ func (s *Store) GetRecentNotes() []Note {
 	return list
 }
 
+type notesSource []Note
+
+func (n notesSource) String(i int) string {
+	return n[i].Title + "\n" + n[i].Content
+}
+
+func (n notesSource) Len() int {
+	return len(n)
+}
+
 func (s *Store) SearchNotes(query string) []Note {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	q := strings.ToLower(strings.TrimSpace(query))
-	isTagSearch := strings.HasPrefix(q, "tag:")
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return s.GetRecentNotes()
+	}
+
+	isTagSearch := strings.HasPrefix(strings.ToLower(q), "tag:")
 	var searchTag string
 	if isTagSearch {
-		searchTag = strings.TrimPrefix(q, "tag:")
+		searchTag = strings.TrimPrefix(strings.ToLower(q), "tag:")
 	}
 
 	var list []Note
-	for _, n := range s.notes {
-		if isTagSearch {
+	if isTagSearch {
+		for _, n := range s.notes {
 			hasTag := false
 			for _, t := range n.Tags {
 				if t == searchTag {
@@ -220,19 +236,27 @@ func (s *Store) SearchNotes(query string) []Note {
 			if hasTag {
 				list = append(list, n)
 			}
-		} else {
-			if strings.Contains(strings.ToLower(n.Title), q) || strings.Contains(strings.ToLower(n.Content), q) {
-				list = append(list, n)
-			}
 		}
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].Pinned != list[j].Pinned {
+				return list[i].Pinned
+			}
+			return list[i].UpdatedAt > list[j].UpdatedAt
+		})
+		return list
 	}
 
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].Pinned != list[j].Pinned {
-			return list[i].Pinned
-		}
-		return list[i].UpdatedAt > list[j].UpdatedAt
-	})
+	// Normal Fuzzy Search
+	var allNotes []Note
+	for _, n := range s.notes {
+		allNotes = append(allNotes, n)
+	}
+
+	matches := fuzzy.FindFrom(q, notesSource(allNotes))
+	
+	for _, match := range matches {
+		list = append(list, allNotes[match.Index])
+	}
 
 	return list
 }
