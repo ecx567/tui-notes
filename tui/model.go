@@ -89,6 +89,11 @@ type Model struct {
 	FileScroll       int
 	ViewingLocalFile bool
 	LocalFilePath    string
+
+	// File Manager Operations
+	FileOpMode       string // "" | "confirm_delete" | "rename" | "mkdir"
+	FileOpInput      textinput.Model
+	FileOpTarget     string // full path of the file/folder being operated on
 }
 
 func New(s *store.Store) Model {
@@ -109,6 +114,11 @@ func New(s *store.Store) Model {
 	ta.SetWidth(60)
 	ta.CharLimit = 10000
 
+	fileOpInput := textinput.New()
+	fileOpInput.Placeholder = "Nuevo nombre..."
+	fileOpInput.CharLimit = 255
+	fileOpInput.Width = 40
+
 	return Model{
 		store:          s,
 		Screen:         ScreenDashboard,
@@ -116,6 +126,7 @@ func New(s *store.Store) Model {
 		NoteTitleInput: titleInput,
 		NoteContent:    ta,
 		ExportSelected: make(map[int64]bool),
+		FileOpInput:    fileOpInput,
 	}
 }
 

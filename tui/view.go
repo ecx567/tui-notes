@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // ─── Logo ────────────────────────────────────────────────────────────────────
@@ -204,7 +206,27 @@ func (m Model) viewExportSelect() string {
 	}
 
 	b.WriteString(helpStyle.Render("\n  ↑/↓ mover • tab seleccionar • ctrl+a todo • enter exportar • esc salir"))
-	return b.String()
+	leftContent := b.String()
+
+	// If terminal is too small, fallback to standard view
+	if m.Width < 80 {
+		return leftContent
+	}
+
+	// Right side: Markdown Preview
+	rightContent := "Sin contenido"
+	leftWidth := (m.Width / 2) + 10 // Give a bit more space to the list
+	rightWidth := m.Width - leftWidth - 4
+	maxHeight := m.Height - 4
+
+	if m.Cursor < count {
+		selected := m.SearchResults[m.Cursor]
+		if selected.Content != "" {
+			rightContent = renderPreview(selected.Content, rightWidth, maxHeight)
+		}
+	}
+
+	return joinSplitView(leftContent, rightContent, leftWidth, rightWidth, maxHeight)
 }
 
 func (m Model) viewRecent() string {
@@ -221,7 +243,14 @@ func (m Model) viewRecent() string {
 		return b.String()
 	}
 
-	visibleItems := (m.Height - 8) / 2
+	// Calculate max title width based on available space
+	leftWidth := (m.Width / 2) + 10
+	maxTitleLen := leftWidth - 30 // Reserve space for cursor, tags, timestamp
+	if maxTitleLen < 15 {
+		maxTitleLen = 15
+	}
+
+	visibleItems := (m.Height - 8)
 	if visibleItems < 3 {
 		visibleItems = 3
 	}
@@ -233,7 +262,37 @@ func (m Model) viewRecent() string {
 
 	for i := m.Scroll; i < end; i++ {
 		o := m.RecentNotes[i]
-		b.WriteString(m.renderNoteListItem(i, o.ID, o.Status, o.Title, o.Content, o.Tags, o.CreatedAt, o.Pinned))
+
+		cursor := "  "
+		style := listItemStyle
+		if i == m.Cursor {
+			cursor = "▸ "
+			style = listSelectedStyle
+		}
+
+		pinStr := ""
+		if o.Pinned {
+			pinStr = lipgloss.NewStyle().Foreground(colorYellow).Render(" ★")
+		}
+
+		tagStr := ""
+		if len(o.Tags) > 0 {
+			var ft []string
+			for _, t := range o.Tags {
+				ft = append(ft, "#"+t)
+			}
+			tagStr = " " + lipgloss.NewStyle().Foreground(colorTeal).Render(strings.Join(ft, " "))
+		}
+
+		line := fmt.Sprintf("%s%s %s%s%s  %s\n",
+			cursor,
+			idStyle.Render(fmt.Sprintf("#%-3d", o.ID)),
+			style.Render(truncateStr(o.Title, maxTitleLen)),
+			pinStr,
+			tagStr,
+			timestampStyle.Render(localTime(o.CreatedAt)))
+
+		b.WriteString(line)
 	}
 
 	if count > visibleItems {
@@ -241,7 +300,27 @@ func (m Model) viewRecent() string {
 	}
 
 	b.WriteString(helpStyle.Render("\n  j/k navigate • enter detail • esc back"))
-	return b.String()
+	
+	leftContent := b.String()
+
+	// If terminal is too small, fallback to standard view
+	if m.Width < 80 {
+		return leftContent
+	}
+
+	// Right side: Markdown Preview
+	rightContent := "Sin contenido"
+	rightWidth := m.Width - leftWidth - 4
+	maxHeight := m.Height - 4
+
+	if m.Cursor < count {
+		selected := m.RecentNotes[m.Cursor]
+		if selected.Content != "" {
+			rightContent = renderPreview(selected.Content, rightWidth, maxHeight)
+		}
+	}
+
+	return joinSplitView(leftContent, rightContent, leftWidth, rightWidth, maxHeight)
 }
 
 func (m Model) viewNoteDetail() string {
@@ -522,7 +601,28 @@ func (m Model) viewFileExplorer() string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("  Explorador de Archivos"))
 	b.WriteString("\n\n")
-	b.WriteString(detailLabelStyle.Render("  Directorio actual: ") + detailValueStyle.Render(m.CurrentPath))
+	
+	// Breadcrumbs rendering
+	cleanPath := filepath.Clean(m.CurrentPath)
+	parts := strings.Split(cleanPath, string(os.PathSeparator))
+	
+	// Ensure we handle Windows root correctly (e.g. "C:" doesn't have a trailing slash in Split)
+	if len(parts) > 0 && strings.HasSuffix(parts[0], ":") && len(parts[0]) == 2 {
+		parts[0] = parts[0] + string(os.PathSeparator)
+	}
+
+	separator := lipgloss.NewStyle().Foreground(colorOverlay).Render(" ❯ ")
+	var styledParts []string
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		styledParts = append(styledParts, lipgloss.NewStyle().Foreground(colorLavender).Bold(true).Render(p))
+	}
+	
+	breadcrumbStr := strings.Join(styledParts, separator)
+	b.WriteString("  " + breadcrumbStr)
+
 	b.WriteString("\n\n")
 	b.WriteString(m.SearchInput.View())
 	b.WriteString("\n\n")
@@ -573,7 +673,101 @@ func (m Model) viewFileExplorer() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(helpStyle.Render("  ↑/↓ mover • enter abrir • backspace carpeta superior • esc salir"))
+	// File operation prompts
+	switch m.FileOpMode {
+	case "confirm_delete":
+		targetName := filepath.Base(m.FileOpTarget)
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render(
+			fmt.Sprintf("  ⚠ ¿Eliminar \"%s\"? (y/n)", targetName)))
+		b.WriteString("\n")
+	case "rename":
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorYellow).Bold(true).Render("  ✎ Renombrar: "))
+		b.WriteString(m.FileOpInput.View())
+		b.WriteString("\n")
+	case "mkdir":
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Render("  📁 Nueva carpeta: "))
+		b.WriteString(m.FileOpInput.View())
+		b.WriteString("\n")
+	}
+
+	// Success / Error messages
+	if m.SuccessMsg != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorGreen).Render("\n  " + m.SuccessMsg))
+		b.WriteString("\n")
+	}
+	if m.ErrorMsg != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorRed).Render("\n  " + m.ErrorMsg))
+		b.WriteString("\n")
+	}
+
+	b.WriteString(helpStyle.Render("  ↑/↓ mover • enter abrir • ctrl+d eliminar • ctrl+r renombrar • ctrl+n nueva carpeta • backspace volver • esc salir"))
 
 	return b.String()
+}
+
+func renderPreview(content string, width, maxHeight int) string {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(width-4), // Word wrap slightly smaller than the panel width
+	)
+	
+	out := content
+	if err == nil {
+		rendered, err := r.Render(content)
+		if err == nil {
+			out = strings.TrimSpace(rendered)
+		}
+	}
+
+	// Truncate height so it doesn't break the layout
+	lines := strings.Split(out, "\n")
+	if len(lines) > maxHeight {
+		lines = lines[:maxHeight-1]
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorOverlay).Render("  ... (sigue abajo) ..."))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// joinSplitView renders two content blocks side-by-side with a perfect separator.
+// It processes line by line, measuring visible width with lipgloss.Width() to handle
+// ANSI escape codes correctly, then pads each line to exactly leftWidth before
+// appending the separator character. This eliminates gaps caused by JoinHorizontal.
+func joinSplitView(leftContent, rightContent string, leftWidth, rightWidth, maxHeight int) string {
+	sepChar := lipgloss.NewStyle().Foreground(colorOverlay).Render("│")
+
+	leftRendered := lipgloss.NewStyle().Width(leftWidth).Render(leftContent)
+	rightRendered := lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightContent)
+
+	leftLines := strings.Split(leftRendered, "\n")
+	rightLines := strings.Split(rightRendered, "\n")
+
+	var out strings.Builder
+	for i := 0; i < maxHeight; i++ {
+		left := ""
+		if i < len(leftLines) {
+			left = leftLines[i]
+		}
+
+		// Pad left line to exact width using ANSI-aware measurement
+		visWidth := lipgloss.Width(left)
+		if visWidth < leftWidth {
+			left += strings.Repeat(" ", leftWidth-visWidth)
+		}
+
+		right := ""
+		if i < len(rightLines) {
+			right = rightLines[i]
+		}
+
+		out.WriteString(left + sepChar + right)
+		if i < maxHeight-1 {
+			out.WriteString("\n")
+		}
+	}
+
+	return out.String()
 }

@@ -26,6 +26,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Clear transient messages on any key press
+		m.SuccessMsg = ""
+		m.ErrorMsg = ""
+
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
@@ -35,7 +39,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Screen == ScreenExportSelect && m.SearchInput.Focused() {
 			return m.handleExportInputKeys(msg)
 		}
-		if m.Screen == ScreenFileExplorer && m.SearchInput.Focused() {
+		if m.Screen == ScreenFileExplorer {
 			return m.handleFileExplorerInputKeys(msg)
 		}
 		if m.Screen == ScreenCreateNote {
@@ -734,6 +738,11 @@ func (m Model) handleFileExplorerInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
+	// Route to file operation handlers when a mode is active
+	if m.FileOpMode != "" {
+		return m.handleFileOpKeys(msg)
+	}
+
 	switch msg.String() {
 	case "backspace":
 		if m.SearchInput.Value() == "" {
@@ -830,6 +839,39 @@ func (m Model) handleFileExplorerInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			m.Screen = ScreenEditorSelect
 			return m, nil
 		}
+
+	// ─── File Manager Operations ─────────────────────────────────────────
+	case "ctrl+d":
+		if len(m.Files) == 0 {
+			return m, nil
+		}
+		selected := m.Files[m.FileCursor]
+		m.FileOpMode = "confirm_delete"
+		m.FileOpTarget = filepath.Join(m.CurrentPath, selected.Name())
+		return m, nil
+
+	case "ctrl+r":
+		if len(m.Files) == 0 {
+			return m, nil
+		}
+		selected := m.Files[m.FileCursor]
+		m.FileOpMode = "rename"
+		m.FileOpTarget = filepath.Join(m.CurrentPath, selected.Name())
+		m.FileOpInput.SetValue(selected.Name())
+		m.FileOpInput.Focus()
+		m.FileOpInput.CursorEnd()
+		m.SearchInput.Blur()
+		return m, nil
+
+	case "ctrl+n":
+		m.FileOpMode = "mkdir"
+		m.FileOpTarget = m.CurrentPath
+		m.FileOpInput.SetValue("")
+		m.FileOpInput.Placeholder = "Nombre de la carpeta..."
+		m.FileOpInput.Focus()
+		m.SearchInput.Blur()
+		return m, nil
+
 	case "esc":
 		m.SearchInput.Blur()
 		m.Screen = ScreenDashboard
@@ -849,6 +891,111 @@ func (m Model) handleFileExplorerInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+// handleFileOpKeys routes keyboard input when a file operation mode is active.
+func (m Model) handleFileOpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.FileOpMode {
+	case "confirm_delete":
+		switch msg.String() {
+		case "y", "Y":
+			info, err := os.Stat(m.FileOpTarget)
+			if err != nil {
+				m.ErrorMsg = "Error: " + err.Error()
+				m.FileOpMode = ""
+				return m, nil
+			}
+			if info.IsDir() {
+				err = os.RemoveAll(m.FileOpTarget)
+			} else {
+				err = os.Remove(m.FileOpTarget)
+			}
+			if err != nil {
+				m.ErrorMsg = "Error eliminando: " + err.Error()
+			} else {
+				m.SuccessMsg = "✓ Eliminado: " + filepath.Base(m.FileOpTarget)
+			}
+			m.FileOpMode = ""
+			m.FileOpTarget = ""
+			if m.FileCursor >= len(m.Files)-1 && m.FileCursor > 0 {
+				m.FileCursor--
+			}
+			return m, m.loadFilesCmd()
+		case "n", "N", "esc":
+			m.FileOpMode = ""
+			m.FileOpTarget = ""
+			return m, nil
+		}
+		return m, nil
+
+	case "rename":
+		switch msg.String() {
+		case "enter":
+			newName := strings.TrimSpace(m.FileOpInput.Value())
+			if newName == "" || newName == filepath.Base(m.FileOpTarget) {
+				m.FileOpMode = ""
+				m.FileOpInput.Blur()
+				m.SearchInput.Focus()
+				return m, nil
+			}
+			newPath := filepath.Join(filepath.Dir(m.FileOpTarget), newName)
+			if err := os.Rename(m.FileOpTarget, newPath); err != nil {
+				m.ErrorMsg = "Error renombrando: " + err.Error()
+			} else {
+				m.SuccessMsg = "✓ Renombrado a: " + newName
+			}
+			m.FileOpMode = ""
+			m.FileOpTarget = ""
+			m.FileOpInput.Blur()
+			m.SearchInput.Focus()
+			return m, m.loadFilesCmd()
+		case "esc":
+			m.FileOpMode = ""
+			m.FileOpTarget = ""
+			m.FileOpInput.Blur()
+			m.SearchInput.Focus()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.FileOpInput, cmd = m.FileOpInput.Update(msg)
+			return m, cmd
+		}
+
+	case "mkdir":
+		switch msg.String() {
+		case "enter":
+			dirName := strings.TrimSpace(m.FileOpInput.Value())
+			if dirName == "" {
+				m.FileOpMode = ""
+				m.FileOpInput.Blur()
+				m.SearchInput.Focus()
+				return m, nil
+			}
+			newPath := filepath.Join(m.FileOpTarget, dirName)
+			if err := os.MkdirAll(newPath, 0755); err != nil {
+				m.ErrorMsg = "Error creando carpeta: " + err.Error()
+			} else {
+				m.SuccessMsg = "✓ Carpeta creada: " + dirName
+			}
+			m.FileOpMode = ""
+			m.FileOpTarget = ""
+			m.FileOpInput.Blur()
+			m.SearchInput.Focus()
+			return m, m.loadFilesCmd()
+		case "esc":
+			m.FileOpMode = ""
+			m.FileOpTarget = ""
+			m.FileOpInput.Blur()
+			m.SearchInput.Focus()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.FileOpInput, cmd = m.FileOpInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	return m, nil
 }
 
 func (m Model) loadFilesCmd() tea.Cmd {
