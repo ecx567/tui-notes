@@ -146,6 +146,12 @@ func (m Model) viewExportSelect() string {
 	b.WriteString(searchInputStyle.Render(m.SearchInput.View()))
 	b.WriteString("\n\n")
 
+	leftWidth := (m.Width / 2) + 10
+	maxTitleLen := leftWidth - 45 // Reserve space for checkbox, ID, status, tags, timestamp
+	if maxTitleLen < 15 {
+		maxTitleLen = 15
+	}
+
 	count := len(m.SearchResults)
 	if count == 0 {
 		if m.SearchQuery != "" {
@@ -193,7 +199,7 @@ func (m Model) viewExportSelect() string {
 				cursor,
 				checkbox,
 				idStyle.Render(fmt.Sprintf("#%-5d", r.ID)),
-				style.Render(truncateStr(r.Title, 50)),
+				style.Render(truncateStr(r.Title, maxTitleLen)),
 				tagStr,
 				timestampStyle.Render(localTime(r.CreatedAt)))
 
@@ -206,27 +212,7 @@ func (m Model) viewExportSelect() string {
 	}
 
 	b.WriteString(helpStyle.Render("\n  ↑/↓ mover • tab seleccionar • ctrl+a todo • enter exportar • esc salir"))
-	leftContent := b.String()
-
-	// If terminal is too small, fallback to standard view
-	if m.Width < 80 {
-		return leftContent
-	}
-
-	// Right side: Markdown Preview
-	rightContent := "Sin contenido"
-	leftWidth := (m.Width / 2) + 10 // Give a bit more space to the list
-	rightWidth := m.Width - leftWidth - 4
-	maxHeight := m.Height - 4
-
-	if m.Cursor < count {
-		selected := m.SearchResults[m.Cursor]
-		if selected.Content != "" {
-			rightContent = renderPreview(selected.Content, rightWidth, maxHeight)
-		}
-	}
-
-	return joinSplitView(leftContent, rightContent, leftWidth, rightWidth, maxHeight)
+	return b.String()
 }
 
 func (m Model) viewRecent() string {
@@ -739,11 +725,9 @@ func renderPreview(content string, width, maxHeight int) string {
 func joinSplitView(leftContent, rightContent string, leftWidth, rightWidth, maxHeight int) string {
 	sepChar := lipgloss.NewStyle().Foreground(colorOverlay).Render("│")
 
-	leftRendered := lipgloss.NewStyle().Width(leftWidth).Render(leftContent)
-	rightRendered := lipgloss.NewStyle().Width(rightWidth).PaddingLeft(1).Render(rightContent)
-
-	leftLines := strings.Split(leftRendered, "\n")
-	rightLines := strings.Split(rightRendered, "\n")
+	// Split raw content directly by newline. Do NOT use lipgloss block width rendering here.
+	leftLines := strings.Split(leftContent, "\n")
+	rightLines := strings.Split(rightContent, "\n")
 
 	var out strings.Builder
 	for i := 0; i < maxHeight; i++ {
@@ -751,19 +735,57 @@ func joinSplitView(leftContent, rightContent string, leftWidth, rightWidth, maxH
 		if i < len(leftLines) {
 			left = leftLines[i]
 		}
+		
+		// Remove any carriage returns just in case
+		left = strings.ReplaceAll(left, "\r", "")
+		
+		// Remove ANSI Erase in Line/Screen sequences
+		left = strings.ReplaceAll(left, "\x1b[K", "")
+		left = strings.ReplaceAll(left, "\x1b[0K", "")
+		left = strings.ReplaceAll(left, "\x1b[1K", "")
+		left = strings.ReplaceAll(left, "\x1b[2K", "")
+		left = strings.ReplaceAll(left, "\x1b[J", "")
+		left = strings.ReplaceAll(left, "\x1b[0J", "")
+		left = strings.ReplaceAll(left, "\x1b[1J", "")
+		left = strings.ReplaceAll(left, "\x1b[2J", "")
 
-		// Pad left line to exact width using ANSI-aware measurement
-		visWidth := lipgloss.Width(left)
-		if visWidth < leftWidth {
-			left += strings.Repeat(" ", leftWidth-visWidth)
+		// Force an ANSI reset at the end of the content to prevent leaked styles
+		// (like underlines or hidden text from textinput) from ruining the padding.
+		left += "\x1b[0m"
+
+		// 1. Measure the exact visible ANSI-aware width of the raw line
+		w := lipgloss.Width(left)
+
+		// 2. Pad manually with exact literal spaces to force alignment
+		if w < leftWidth {
+			left += strings.Repeat(" ", leftWidth-w)
+		} else if w > leftWidth {
+			// Leave as is, no complex truncation
 		}
 
 		right := ""
 		if i < len(rightLines) {
 			right = rightLines[i]
 		}
+		
+		// Remove any carriage returns
+		right = strings.ReplaceAll(right, "\r", "")
+		
+		// Remove ANSI Erase in Line/Screen sequences that Glamour might emit
+		// and which Windows Terminal executes, erasing the separator line!
+		right = strings.ReplaceAll(right, "\x1b[K", "")
+		right = strings.ReplaceAll(right, "\x1b[0K", "")
+		right = strings.ReplaceAll(right, "\x1b[1K", "")
+		right = strings.ReplaceAll(right, "\x1b[2K", "")
+		right = strings.ReplaceAll(right, "\x1b[J", "")
+		right = strings.ReplaceAll(right, "\x1b[0J", "")
+		right = strings.ReplaceAll(right, "\x1b[1J", "")
+		right = strings.ReplaceAll(right, "\x1b[2J", "")
 
-		out.WriteString(left + sepChar + right)
+		right += "\x1b[0m"
+
+		// Join with exact padding: left + separator + space + right
+		out.WriteString(left + sepChar + " " + right)
 		if i < maxHeight-1 {
 			out.WriteString("\n")
 		}

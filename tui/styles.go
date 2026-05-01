@@ -84,7 +84,15 @@ func ApplyTheme(p config.Palette) {
 
 	// Rebuild styles
 	appStyle = lipgloss.NewStyle().Foreground(colorText).Padding(1, 2)
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(colorLavender).BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).BorderForeground(colorOverlay).PaddingBottom(1).MarginBottom(1)
+	headerStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(colorLavender).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true).
+		BorderTop(false).
+		BorderLeft(false).
+		BorderRight(false).
+		MarginBottom(1)
 	helpStyle = lipgloss.NewStyle().Foreground(colorSubtext).MarginTop(1)
 	errorStyle = lipgloss.NewStyle().Foreground(colorRed).Bold(true).Padding(0, 1)
 
@@ -107,7 +115,7 @@ func ApplyTheme(p config.Palette) {
 	detailLabelStyle = lipgloss.NewStyle().Foreground(colorSubtext).Width(14).Align(lipgloss.Right).PaddingRight(1)
 	detailValueStyle = lipgloss.NewStyle().Foreground(colorText)
 
-	searchInputStyle = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(colorLavender).Foreground(colorText).Padding(0, 1).MarginBottom(1)
+	searchInputStyle = lipgloss.NewStyle().Foreground(colorText).PaddingLeft(1).MarginBottom(1)
 	noResultsStyle = lipgloss.NewStyle().Foreground(colorSubtext).Italic(true).PaddingLeft(2).MarginTop(1)
 }
 
