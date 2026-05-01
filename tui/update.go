@@ -457,7 +457,7 @@ func (m Model) handleNoteDetailKeys(key string) (tea.Model, tea.Cmd) {
 		m.NoteContent.Blur()
 		return m, textinput.Blink
 	case "o":
-		m.AvailableEditors = detectEditors()
+		m.AvailableEditors = detectEditors(m.Config.DefaultEditor)
 		m.EditorCursor = 0
 		m.Screen = ScreenEditorSelect
 		return m, nil
@@ -489,8 +489,15 @@ func (m Model) handleNoteDetailKeys(key string) (tea.Model, tea.Cmd) {
 
 // ─── External Editor ─────────────────────────────────────────────────────────
 
-func detectEditors() []Editor {
+func detectEditors(defaultEditor string) []Editor {
 	var available []Editor
+
+	// If user configured a default editor, put it first
+	if defaultEditor != "" {
+		if _, err := exec.LookPath(defaultEditor); err == nil {
+			available = append(available, Editor{Name: "★ " + defaultEditor + " (config)", Command: defaultEditor})
+		}
+	}
 
 	if env := os.Getenv("EDITOR"); env != "" {
 		available = append(available, Editor{Name: "Sistema Default ($EDITOR)", Command: env})
@@ -513,6 +520,10 @@ func detectEditors() []Editor {
 	}
 
 	for _, c := range candidates {
+		// Skip if it's the same as the default (already added)
+		if c.Command == defaultEditor {
+			continue
+		}
 		if _, err := exec.LookPath(c.Command); err == nil {
 			available = append(available, c)
 		}
@@ -833,7 +844,7 @@ func (m Model) handleFileExplorerInputKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			m.LocalFilePath = fullPath
 			m.SelectedNote = &store.Note{ID: 0, Title: selected.Name(), Content: ""} 
 			
-			m.AvailableEditors = detectEditors()
+			m.AvailableEditors = detectEditors(m.Config.DefaultEditor)
 			m.EditorCursor = 0
 			m.PrevScreen = m.Screen
 			m.Screen = ScreenEditorSelect
@@ -1116,7 +1127,7 @@ func (m Model) handleFileExplorerKeys(key string) (tea.Model, tea.Cmd) {
 			m.LocalFilePath = fullPath
 			m.SelectedNote = &store.Note{ID: 0, Title: selected.Name(), Content: ""} // Minimal dummy
 			
-			m.AvailableEditors = detectEditors()
+			m.AvailableEditors = detectEditors(m.Config.DefaultEditor)
 			m.EditorCursor = 0
 			m.PrevScreen = m.Screen
 			m.Screen = ScreenEditorSelect

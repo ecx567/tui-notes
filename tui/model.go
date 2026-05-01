@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"notas/config"
 	"notas/store"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -47,8 +48,9 @@ type Editor struct {
 }
 
 type Model struct {
-	store      *store.Store
-	Screen     Screen
+	store  *store.Store
+	Config config.Config
+	Screen Screen
 	PrevScreen Screen
 	Width      int
 	Height     int
@@ -96,7 +98,9 @@ type Model struct {
 	FileOpTarget     string // full path of the file/folder being operated on
 }
 
-func New(s *store.Store) Model {
+func New(s *store.Store, cfg config.Config) Model {
+	// Apply theme from config
+	ApplyTheme(config.GetPalette(cfg.Theme))
 	ti := textinput.New()
 	ti.Placeholder = "Buscar notas..."
 	ti.CharLimit = 256
@@ -121,12 +125,14 @@ func New(s *store.Store) Model {
 
 	return Model{
 		store:          s,
+		Config:         cfg,
 		Screen:         ScreenDashboard,
 		SearchInput:    ti,
 		NoteTitleInput: titleInput,
 		NoteContent:    ta,
 		ExportSelected: make(map[int64]bool),
 		FileOpInput:    fileOpInput,
+		CurrentPath:    cfg.ExplorerPath,
 	}
 }
 

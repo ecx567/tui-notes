@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,16 +9,15 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/sahilm/fuzzy"
+	_ "modernc.org/sqlite"
 )
 
 type Note struct {
-	ID        int64  `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
+	ID        int64    `json:"id"`
+	Title     string   `json:"title"`
+	Content   string   `json:"content"`
 	Status    string   `json:"status"`
 	Pinned    bool     `json:"pinned"`
 	Tags      []string `json:"tags"`
@@ -51,253 +51,280 @@ type TagStats struct {
 }
 
 type Store struct {
-	path  string
-	notes map[int64]Note
-	mu    sync.RWMutex
+	db *sql.DB
 }
 
-func New(filepath string) (*Store, error) {
-	s := &Store{
-		path:  filepath,
-		notes: make(map[int64]Note),
-	}
-	if err := s.load(); err != nil && !os.IsNotExist(err) {
+// New initializes the SQLite database and performs automatic migration from JSON if present.
+func New(dbPath string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, err
 	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Store{db: db}
+
+	if err := s.initSchema(); err != nil {
+		return nil, err
+	}
+
+	// Automatic migration from old JSON to new SQLite DB
+	jsonPath := strings.Replace(dbPath, ".db", ".json", 1)
+	if _, err := os.Stat(jsonPath); err == nil {
+		s.migrateFromJSON(jsonPath)
+	}
+
 	return s, nil
 }
 
-func (s *Store) load() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return err
-	}
-
-	var notesList []Note
-	if err := json.Unmarshal(data, &notesList); err != nil {
-		return err
-	}
-
-	for _, n := range notesList {
-		s.notes[n.ID] = n
-	}
-	return nil
+func (s *Store) initSchema() error {
+	query := `
+	CREATE TABLE IF NOT EXISTS notes (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		title TEXT NOT NULL,
+		content TEXT NOT NULL,
+		status TEXT NOT NULL,
+		pinned BOOLEAN NOT NULL DEFAULT 0,
+		tags TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);`
+	_, err := s.db.Exec(query)
+	return err
 }
 
-func (s *Store) save() error {
-	var notesList []Note
-	for _, n := range s.notes {
-		notesList = append(notesList, n)
-	}
-
-	data, err := json.MarshalIndent(notesList, "", "  ")
+func (s *Store) migrateFromJSON(jsonPath string) {
+	data, err := os.ReadFile(jsonPath)
 	if err != nil {
-		return err
+		return
+	}
+	var notes []Note
+	if err := json.Unmarshal(data, &notes); err != nil {
+		return
 	}
 
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM notes`).Scan(&count)
+	if count > 0 {
+		os.Rename(jsonPath, jsonPath+".bak")
+		return
 	}
 
-	return os.WriteFile(s.path, data, 0644)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO notes (id, title, content, status, pinned, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		return
+	}
+	defer stmt.Close()
+
+	for _, n := range notes {
+		tagsJSON, _ := json.Marshal(n.Tags)
+		stmt.Exec(n.ID, n.Title, n.Content, n.Status, n.Pinned, string(tagsJSON), n.CreatedAt, n.UpdatedAt)
+	}
+	tx.Commit()
+
+	os.Rename(jsonPath, jsonPath+".bak")
+}
+
+// scanNote is a helper to scan DB rows into Note structs.
+type Scanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanNote(scanner Scanner) (Note, bool) {
+	var n Note
+	var tagsJSON string
+	err := scanner.Scan(&n.ID, &n.Title, &n.Content, &n.Status, &n.Pinned, &tagsJSON, &n.CreatedAt, &n.UpdatedAt)
+	if err != nil {
+		return n, false
+	}
+	_ = json.Unmarshal([]byte(tagsJSON), &n.Tags)
+	return n, true
 }
 
 func (s *Store) SaveNote(title, content, status string) (Note, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	now := time.Now().Format(time.RFC3339)
-	
-	var maxID int64
-	for id := range s.notes {
-		if id > maxID {
-			maxID = id
-		}
+	tags := extractTags(title + " " + content)
+	tagsJSON, _ := json.Marshal(tags)
+
+	res, err := s.db.Exec(`
+		INSERT INTO notes (title, content, status, pinned, tags, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, title, content, status, false, string(tagsJSON), now, now)
+
+	if err != nil {
+		return Note{}, err
 	}
-	
-	note := Note{
-		ID:        maxID + 1,
+
+	id, _ := res.LastInsertId()
+	return Note{
+		ID:        id,
 		Title:     title,
 		Content:   content,
 		Status:    status,
-		Tags:      extractTags(title + " " + content),
+		Pinned:    false,
+		Tags:      tags,
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-
-	s.notes[note.ID] = note
-	return note, s.save()
+	}, nil
 }
 
 func (s *Store) UpdateNote(id int64, title, content string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	now := time.Now().Format(time.RFC3339)
+	tags := extractTags(title + " " + content)
+	tagsJSON, _ := json.Marshal(tags)
 
-	note, exists := s.notes[id]
-	if !exists {
-		return os.ErrNotExist
-	}
-
-	note.Title = title
-	note.Content = content
-	note.Tags = extractTags(title + " " + content)
-	note.UpdatedAt = time.Now().Format(time.RFC3339)
-	s.notes[id] = note
-
-	return s.save()
+	_, err := s.db.Exec(`
+		UPDATE notes
+		SET title = ?, content = ?, tags = ?, updated_at = ?
+		WHERE id = ?
+	`, title, content, string(tagsJSON), now, id)
+	return err
 }
 
 func (s *Store) DeleteNote(id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.notes[id]; !exists {
-		return os.ErrNotExist
-	}
-
-	delete(s.notes, id)
-	return s.save()
+	_, err := s.db.Exec(`DELETE FROM notes WHERE id = ?`, id)
+	return err
 }
 
 func (s *Store) TogglePin(id int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	note, exists := s.notes[id]
-	if !exists {
-		return os.ErrNotExist
-	}
-
-	note.Pinned = !note.Pinned
-	note.UpdatedAt = time.Now().Format(time.RFC3339)
-	s.notes[id] = note
-
-	return s.save()
+	now := time.Now().Format(time.RFC3339)
+	_, err := s.db.Exec(`
+		UPDATE notes
+		SET pinned = NOT pinned, updated_at = ?
+		WHERE id = ?
+	`, now, id)
+	return err
 }
 
 func (s *Store) GetRecentNotes() []Note {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`
+		SELECT id, title, content, status, pinned, tags, created_at, updated_at
+		FROM notes
+		ORDER BY pinned DESC, updated_at DESC
+	`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
 
 	var list []Note
-	for _, n := range s.notes {
-		list = append(list, n)
-	}
-
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].Pinned != list[j].Pinned {
-			return list[i].Pinned
+	for rows.Next() {
+		if n, ok := scanNote(rows); ok {
+			list = append(list, n)
 		}
-		return list[i].UpdatedAt > list[j].UpdatedAt
-	})
-
+	}
 	return list
 }
 
-type notesSource []Note
-
-func (n notesSource) String(i int) string {
-	return n[i].Title + "\n" + n[i].Content
-}
-
-func (n notesSource) Len() int {
-	return len(n)
-}
-
 func (s *Store) SearchNotes(query string) []Note {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	q := strings.TrimSpace(query)
 	if q == "" {
 		return s.GetRecentNotes()
 	}
 
 	isTagSearch := strings.HasPrefix(strings.ToLower(q), "tag:")
-	var searchTag string
-	if isTagSearch {
-		searchTag = strings.TrimPrefix(strings.ToLower(q), "tag:")
-	}
-
 	var list []Note
+
 	if isTagSearch {
-		for _, n := range s.notes {
-			hasTag := false
-			for _, t := range n.Tags {
-				if t == searchTag {
-					hasTag = true
-					break
+		searchTag := strings.TrimPrefix(strings.ToLower(q), "tag:")
+		// Fast SQLite text search within JSON string
+		searchStr := fmt.Sprintf(`%%"%s"%%`, searchTag)
+		rows, err := s.db.Query(`
+			SELECT id, title, content, status, pinned, tags, created_at, updated_at
+			FROM notes
+			WHERE tags LIKE ?
+			ORDER BY pinned DESC, updated_at DESC
+		`, searchStr)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				if n, ok := scanNote(rows); ok {
+					// Validate exact match after LIKE
+					for _, t := range n.Tags {
+						if t == searchTag {
+							list = append(list, n)
+							break
+						}
+					}
 				}
 			}
-			if hasTag {
-				list = append(list, n)
-			}
 		}
-		sort.Slice(list, func(i, j int) bool {
-			if list[i].Pinned != list[j].Pinned {
-				return list[i].Pinned
-			}
-			return list[i].UpdatedAt > list[j].UpdatedAt
-		})
 		return list
 	}
 
-	// Normal Fuzzy Search
-	var allNotes []Note
-	for _, n := range s.notes {
-		allNotes = append(allNotes, n)
-	}
-
-	matches := fuzzy.FindFrom(q, notesSource(allNotes))
+	searchPattern := "%" + q + "%"
+	rows, err := s.db.Query(`
+		SELECT id, title, content, status, pinned, tags, created_at, updated_at
+		FROM notes
+		WHERE title LIKE ? OR content LIKE ?
+		ORDER BY pinned DESC, updated_at DESC
+		LIMIT 100
+	`, searchPattern, searchPattern)
 	
-	for _, match := range matches {
-		list = append(list, allNotes[match.Index])
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			if n, ok := scanNote(rows); ok {
+				list = append(list, n)
+			}
+		}
 	}
-
 	return list
 }
 
 func (s *Store) GetNote(id int64) (Note, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	n, ok := s.notes[id]
-	return n, ok
+	row := s.db.QueryRow(`SELECT id, title, content, status, pinned, tags, created_at, updated_at FROM notes WHERE id = ?`, id)
+	return scanNote(row)
 }
 
 func (s *Store) GetStats() Stats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return Stats{TotalNotes: len(s.notes)}
+	var count int
+	s.db.QueryRow(`SELECT COUNT(*) FROM notes`).Scan(&count)
+	return Stats{TotalNotes: count}
 }
 
 func (s *Store) GetTags() []TagStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT tags FROM notes`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
 
 	tagMap := make(map[string]int)
-	for _, n := range s.notes {
-		for _, tag := range n.Tags {
-			tagMap[tag]++
+	for rows.Next() {
+		var tagsJSON string
+		if err := rows.Scan(&tagsJSON); err == nil {
+			var tags []string
+			if json.Unmarshal([]byte(tagsJSON), &tags) == nil {
+				for _, t := range tags {
+					tagMap[t]++
+				}
+			}
 		}
 	}
 
-	var tags []TagStats
-	for name, count := range tagMap {
-		tags = append(tags, TagStats{Name: name, Count: count})
+	var list []TagStats
+	for k, v := range tagMap {
+		list = append(list, TagStats{Name: k, Count: v})
 	}
 
-	sort.Slice(tags, func(i, j int) bool {
-		if tags[i].Count != tags[j].Count {
-			return tags[i].Count > tags[j].Count
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Count != list[j].Count {
+			return list[i].Count > list[j].Count
 		}
-		return tags[i].Name < tags[j].Name
+		return list[i].Name < list[j].Name
 	})
 
-	return tags
+	return list
 }
 
 func (s *Store) ExportNotes(ids []int64, exportDir string) (int, error) {
@@ -305,37 +332,38 @@ func (s *Store) ExportNotes(ids []int64, exportDir string) (int, error) {
 		return 0, err
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	query := `SELECT id, title, content, status, pinned, tags, created_at, updated_at FROM notes`
+	var args []interface{}
+
+	if len(ids) > 0 {
+		placeholders := make([]string, len(ids))
+		for i, id := range ids {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
 
 	count := 0
-	for _, note := range s.notes {
-		exportThis := false
-		if len(ids) == 0 {
-			exportThis = true
-		} else {
-			for _, id := range ids {
-				if id == note.ID {
-					exportThis = true
-					break
-				}
+	for rows.Next() {
+		if note, ok := scanNote(rows); ok {
+			safeTitle := strings.ReplaceAll(strings.ToLower(note.Title), " ", "-")
+			safeTitle = strings.ReplaceAll(safeTitle, "/", "-")
+			filename := fmt.Sprintf("%d_%s.md", note.ID, safeTitle)
+			path := filepath.Join(exportDir, filename)
+
+			content := fmt.Sprintf("---\ntitle: %s\nid: %d\ndate: %s\ntags: [%s]\n---\n\n%s\n",
+				note.Title, note.ID, note.CreatedAt, strings.Join(note.Tags, ", "), note.Content)
+
+			if err := os.WriteFile(path, []byte(content), 0644); err == nil {
+				count++
 			}
-		}
-
-		if !exportThis {
-			continue
-		}
-
-		safeTitle := strings.ReplaceAll(strings.ToLower(note.Title), " ", "-")
-		safeTitle = strings.ReplaceAll(safeTitle, "/", "-")
-		filename := fmt.Sprintf("%d_%s.md", note.ID, safeTitle)
-		path := filepath.Join(exportDir, filename)
-
-		content := fmt.Sprintf("---\ntitle: %s\nid: %d\ndate: %s\ntags: [%s]\n---\n\n%s\n",
-			note.Title, note.ID, note.CreatedAt, strings.Join(note.Tags, ", "), note.Content)
-
-		if err := os.WriteFile(path, []byte(content), 0644); err == nil {
-			count++
 		}
 	}
 	return count, nil
