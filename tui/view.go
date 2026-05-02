@@ -60,6 +60,12 @@ func (m Model) View() string {
 		content = m.viewExportSelect()
 	case ScreenFileExplorer:
 		content = m.viewFileExplorer()
+	case ScreenConnections:
+		content = m.viewConnections()
+	case ScreenConnectionForm:
+		content = m.viewConnectionForm()
+	case ScreenConnectionNotes:
+		content = m.viewConnectionNotes()
 	default:
 		content = "Unknown screen"
 	}
@@ -102,7 +108,8 @@ func (m Model) viewDashboard() string {
 
 func (m Model) viewSearch() string {
 	var b strings.Builder
-	b.WriteString(headerStyle.Render("  Búsqueda Dinámica"))
+	leftWidth := (m.Width / 2) + 10
+	b.WriteString(headerStyle.Copy().Width(leftWidth - 2).Render("  Búsqueda Dinámica"))
 	b.WriteString("\n\n")
 	b.WriteString(searchInputStyle.Render(m.SearchInput.View()))
 	b.WriteString("\n\n")
@@ -141,13 +148,13 @@ func (m Model) viewSearch() string {
 
 func (m Model) viewExportSelect() string {
 	var b strings.Builder
-	b.WriteString(headerStyle.Render("  Exportar Notas"))
+	leftWidth := (m.Width / 2) + 10
+	b.WriteString(headerStyle.Copy().Width(leftWidth - 2).Render("  Exportar Notas"))
 	b.WriteString("\n\n")
 	b.WriteString(searchInputStyle.Render(m.SearchInput.View()))
 	b.WriteString("\n\n")
 
-	leftWidth := (m.Width / 2) + 10
-	maxTitleLen := leftWidth - 45 // Reserve space for checkbox, ID, status, tags, timestamp
+	maxTitleLen := m.Width - 55 // Reserve space for checkbox, ID, status, tags, timestamp
 	if maxTitleLen < 15 {
 		maxTitleLen = 15
 	}
@@ -229,7 +236,8 @@ func (m Model) viewRecent() string {
 	var b strings.Builder
 
 	count := len(m.RecentNotes)
-	b.WriteString(headerStyle.Render(fmt.Sprintf("  Notas Recientes — %d total", count)))
+	leftWidth := (m.Width / 2) + 10
+	b.WriteString(headerStyle.Copy().Width(leftWidth - 2).Render(fmt.Sprintf("  Notas Recientes — %d total", count)))
 	b.WriteString("\n")
 
 	if count == 0 {
@@ -238,9 +246,6 @@ func (m Model) viewRecent() string {
 		b.WriteString(helpStyle.Render("  esc back"))
 		return b.String()
 	}
-
-	// Calculate max title width based on available space
-	leftWidth := (m.Width / 2) + 10
 
 	visibleItems := (m.Height - 8)
 	if visibleItems < 3 {
@@ -347,14 +352,14 @@ func (m Model) viewNoteDetail() string {
 	var b strings.Builder
 
 	if m.SelectedNote == nil {
-		b.WriteString(headerStyle.Render("  Detalle de Nota"))
+		b.WriteString(headerStyle.Copy().Width(m.Width - 4).Render("  Detalle de Nota"))
 		b.WriteString("\n")
 		b.WriteString(noResultsStyle.Render("Cargando..."))
 		return b.String()
 	}
 
 	note := m.SelectedNote
-	b.WriteString(headerStyle.Render("  Nota #" + fmt.Sprintf("%d", note.ID)))
+	b.WriteString(headerStyle.Copy().Width(m.Width - 4).Render("  Nota #" + fmt.Sprintf("%d", note.ID)))
 	if note.Pinned {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorYellow).Render(" 📌 FIJADA"))
 	}
@@ -625,6 +630,9 @@ func localTime(utc string) string {
 }
 
 func truncateStr(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	s = strings.ReplaceAll(s, "\n", " ")
 	runes := []rune(s)
 	if len(runes) <= max {
@@ -637,7 +645,7 @@ func truncateStr(s string, max int) string {
 
 func (m Model) viewFileExplorer() string {
 	var b strings.Builder
-	b.WriteString(headerStyle.Render("  Explorador de Archivos"))
+	b.WriteString(headerStyle.Copy().Width(m.Width - 4).Render("  Explorador de Archivos"))
 	b.WriteString("\n\n")
 	
 	// Breadcrumbs rendering
@@ -771,77 +779,164 @@ func renderPreview(content string, width, maxHeight int) string {
 }
 
 // joinSplitView renders two content blocks side-by-side with a perfect separator.
-// It processes line by line, measuring visible width with lipgloss.Width() to handle
-// ANSI escape codes correctly, then pads each line to exactly leftWidth before
-// appending the separator character. This eliminates gaps caused by JoinHorizontal.
+// joinSplitView renders two content blocks side-by-side with a perfect separator.
 func joinSplitView(leftContent, rightContent string, leftWidth, rightWidth, maxHeight int) string {
-	sepChar := lipgloss.NewStyle().Foreground(colorOverlay).Render("│")
+	leftBlock := lipgloss.NewStyle().
+		Width(leftWidth).
+		Height(maxHeight).
+		Render(leftContent)
 
-	// Split raw content directly by newline. Do NOT use lipgloss block width rendering here.
-	leftLines := strings.Split(leftContent, "\n")
-	rightLines := strings.Split(rightContent, "\n")
+	rightBlock := lipgloss.NewStyle().
+		Width(rightWidth).
+		Height(maxHeight).
+		PaddingLeft(1).
+		Render(rightContent)
 
-	var out strings.Builder
+	var sepBuilder strings.Builder
 	for i := 0; i < maxHeight; i++ {
-		left := ""
-		if i < len(leftLines) {
-			left = leftLines[i]
-		}
-		
-		// Remove any carriage returns just in case
-		left = strings.ReplaceAll(left, "\r", "")
-		
-		// Remove ANSI Erase in Line/Screen sequences
-		left = strings.ReplaceAll(left, "\x1b[K", "")
-		left = strings.ReplaceAll(left, "\x1b[0K", "")
-		left = strings.ReplaceAll(left, "\x1b[1K", "")
-		left = strings.ReplaceAll(left, "\x1b[2K", "")
-		left = strings.ReplaceAll(left, "\x1b[J", "")
-		left = strings.ReplaceAll(left, "\x1b[0J", "")
-		left = strings.ReplaceAll(left, "\x1b[1J", "")
-		left = strings.ReplaceAll(left, "\x1b[2J", "")
-
-		// Force an ANSI reset at the end of the content to prevent leaked styles
-		// (like underlines or hidden text from textinput) from ruining the padding.
-		left += "\x1b[0m"
-
-		// 1. Measure the exact visible ANSI-aware width of the raw line
-		w := lipgloss.Width(left)
-
-		// 2. Pad manually with exact literal spaces to force alignment
-		if w < leftWidth {
-			left += strings.Repeat(" ", leftWidth-w)
-		} else if w > leftWidth {
-			// Leave as is, no complex truncation
-		}
-
-		right := ""
-		if i < len(rightLines) {
-			right = rightLines[i]
-		}
-		
-		// Remove any carriage returns
-		right = strings.ReplaceAll(right, "\r", "")
-		
-		// Remove ANSI Erase in Line/Screen sequences that Glamour might emit
-		// and which Windows Terminal executes, erasing the separator line!
-		right = strings.ReplaceAll(right, "\x1b[K", "")
-		right = strings.ReplaceAll(right, "\x1b[0K", "")
-		right = strings.ReplaceAll(right, "\x1b[1K", "")
-		right = strings.ReplaceAll(right, "\x1b[2K", "")
-		right = strings.ReplaceAll(right, "\x1b[J", "")
-		right = strings.ReplaceAll(right, "\x1b[0J", "")
-		right = strings.ReplaceAll(right, "\x1b[1J", "")
-		right = strings.ReplaceAll(right, "\x1b[2J", "")
-
-		right += "\x1b[0m"
-
-		// Join with exact padding: left + separator + space + right
-		out.WriteString(left + sepChar + " " + right)
+		sepBuilder.WriteString("│")
 		if i < maxHeight-1 {
-			out.WriteString("\n")
+			sepBuilder.WriteString("\n")
+		}
+	}
+	separator := lipgloss.NewStyle().Foreground(colorOverlay).Render(sepBuilder.String())
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftBlock, separator, rightBlock)
+}
+
+// ─── Connections View ────────────────────────────────────────────────────────
+
+func (m Model) viewConnections() string {
+	var b strings.Builder
+	b.WriteString(headerStyle.Copy().Width(m.Width - 4).Render("  Conexiones Externa"))
+	b.WriteString("\n\n")
+
+	providers := []string{"Notion", "Obsidian"}
+	for i, p := range providers {
+		status := lipgloss.NewStyle().Foreground(colorOverlay).Render("[No Configurado]")
+		
+		// Check config status
+		if p == "Notion" && m.Config.NotionToken != "" && m.Config.NotionDatabaseID != "" {
+			status = lipgloss.NewStyle().Foreground(colorGreen).Render("[Conectado]")
+		} else if p == "Obsidian" && m.Config.ObsidianVaultPath != "" {
+			status = lipgloss.NewStyle().Foreground(colorGreen).Render("[Conectado]")
+		}
+
+		cursor := "  "
+		style := menuItemStyle
+		if i == m.ConnCursor {
+			cursor = "▸ "
+			style = menuSelectedStyle
+		}
+
+		b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, style.Render(p), status))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k mover • enter seleccionar • esc volver"))
+	return b.String()
+}
+
+func (m Model) viewConnectionForm() string {
+	var b strings.Builder
+	b.WriteString(headerStyle.Copy().Width(m.Width - 4).Render(fmt.Sprintf("  Configurar %s", m.ConnProvider)))
+	b.WriteString("\n\n")
+
+	if m.ConnProvider == "Notion" {
+		if m.ConnInputMode == 0 {
+			b.WriteString(detailLabelStyle.Render("Ingresa el Token de Integración (Bearer Token):"))
+			b.WriteString("\n")
+			b.WriteString(searchInputStyle.Render(m.ConnInputToken.View()))
+		} else {
+			b.WriteString(detailLabelStyle.Render("Ingresa el ID de la Base de Datos:"))
+			b.WriteString("\n")
+			b.WriteString(searchInputStyle.Render(m.ConnInputID.View()))
+		}
+	} else if m.ConnProvider == "Obsidian" {
+		b.WriteString(detailLabelStyle.Render("Ingresa la ruta absoluta de tu Vault de Obsidian:"))
+		b.WriteString("\n")
+		b.WriteString(searchInputStyle.Render(m.ConnInputToken.View()))
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render("  enter confirmar • esc cancelar"))
+	return b.String()
+}
+
+func (m Model) viewConnectionNotes() string {
+	var b strings.Builder
+	leftWidth := (m.Width / 2) + 10
+	b.WriteString(headerStyle.Copy().Width(leftWidth - 2).Render(fmt.Sprintf("  Notas en %s — %d total", m.ConnProvider, len(m.ConnNotes))))
+	b.WriteString("\n\n")
+
+	count := len(m.ConnNotes)
+	if count == 0 {
+		b.WriteString(noResultsStyle.Render("No hay notas cargadas o no se pudo acceder."))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("  esc volver"))
+		return b.String()
+	}
+
+	visibleItems := (m.Height - 8)
+	if visibleItems < 3 {
+		visibleItems = 3
+	}
+
+	end := m.Scroll + visibleItems
+	if end > count {
+		end = count
+	}
+
+	for i := m.Scroll; i < end; i++ {
+		r := m.ConnNotes[i]
+		
+		cursor := "  "
+		style := listItemStyle
+		if i == m.Cursor {
+			cursor = "▸ "
+			style = listSelectedStyle
+		}
+
+		var formattedTags []string
+		for _, t := range r.Tags {
+			formattedTags = append(formattedTags, "#"+t)
+		}
+		tagStr := ""
+		if len(formattedTags) > 0 {
+			tagStr = " " + lipgloss.NewStyle().Foreground(colorTeal).Render(strings.Join(formattedTags, " "))
+		}
+
+		line := fmt.Sprintf("%s%s %s%s  %s\n",
+			cursor,
+			idStyle.Render(fmt.Sprintf("#%-5d", r.ID)),
+			style.Render(truncateStr(r.Title, leftWidth-30)),
+			tagStr,
+			timestampStyle.Render(localTime(r.CreatedAt)))
+
+		b.WriteString(line)
+	}
+
+	if count > visibleItems {
+		b.WriteString(fmt.Sprintf("\n  %s", timestampStyle.Render(fmt.Sprintf("mostrando %d-%d de %d", m.Scroll+1, end, count))))
+	}
+
+	b.WriteString(helpStyle.Render("\n  j/k mover • enter ver/editar • esc volver"))
+	
+	leftContent := b.String()
+
+	if m.Width < 80 {
+		return leftContent
+	}
+
+	rightContent := "Sin contenido"
+	rightWidth := m.Width - leftWidth - 4
+	maxHeight := m.Height - 4
+
+	if m.Cursor < count {
+		selected := m.ConnNotes[m.Cursor]
+		if selected.Content != "" {
+			rightContent = renderPreview(selected.Content, rightWidth, maxHeight)
 		}
 	}
 
-	return out.String()
+	return joinSplitView(leftContent, rightContent, leftWidth, rightWidth, maxHeight)
 }

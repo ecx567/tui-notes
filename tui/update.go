@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"notas/store"
+	"notas/config"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -45,6 +46,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Screen == ScreenCreateNote {
 			return m.handleCreateNoteMsg(msg)
 		}
+		if m.Screen == ScreenConnectionForm {
+			return m.handleConnectionFormMsg(msg)
+		}
 		return m.handleKeyPress(msg.String())
 
 	case statsLoadedMsg:
@@ -66,6 +70,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case filesLoadedMsg:
 		m.Files = msg.files
+		return m, nil
+
+	case connectionNotesLoadedMsg:
+		m.ConnNotes = msg.notes
 		return m, nil
 
 	case noteDetailMsg:
@@ -139,6 +147,10 @@ func (m Model) handleKeyPress(key string) (tea.Model, tea.Cmd) {
 		return m.handleEditorSelectKeys(key)
 	case ScreenFileExplorer:
 		return m.handleFileExplorerKeys(key)
+	case ScreenConnections:
+		return m.handleConnectionsKeys(key)
+	case ScreenConnectionNotes:
+		return m.handleConnectionNotesKeys(key)
 	}
 	return m, nil
 }
@@ -151,6 +163,7 @@ var dashboardMenuItems = []string{
 	"Explorar etiquetas",
 	"Exportar notas",
 	"Explorar archivos",
+	"Conexiones",
 	"Crear nota nueva",
 	"Salir",
 }
@@ -232,6 +245,11 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		return m, tea.Batch(textinput.Blink, m.loadFilesCmd())
 	case 5:
 		m.PrevScreen = ScreenDashboard
+		m.Screen = ScreenConnections
+		m.ConnCursor = 0
+		return m, nil
+	case 6:
+		m.PrevScreen = ScreenDashboard
 		m.Screen = ScreenCreateNote
 		m.EditingNoteID = 0
 		m.EditingField = 0
@@ -240,7 +258,7 @@ func (m Model) handleDashboardSelection() (tea.Model, tea.Cmd) {
 		m.NoteTitleInput.Focus()
 		m.NoteContent.Blur()
 		return m, textinput.Blink
-	case 6:
+	case 7:
 		return m, tea.Quit
 	}
 	return m, nil
@@ -1141,5 +1159,151 @@ func (m Model) handleFileExplorerKeys(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	
+	return m, nil
+}
+
+// ─── Connections ─────────────────────────────────────────────────────────────
+
+func (m Model) loadConnectionNotesCmd(provider string) tea.Cmd {
+	return func() tea.Msg {
+		var list []store.Note
+		if provider == "Notion" && m.Config.NotionToken != "" && m.Config.NotionDatabaseID != "" {
+			allNotes := m.store.SearchNotes("")
+			for _, n := range allNotes {
+				if n.Source == "notion" {
+					list = append(list, n)
+				}
+			}
+		} else if provider == "Obsidian" && m.Config.ObsidianVaultPath != "" {
+			allNotes := m.store.SearchNotes("")
+			for _, n := range allNotes {
+				if n.Source == "obsidian" {
+					list = append(list, n)
+				}
+			}
+		}
+		return connectionNotesLoadedMsg{notes: list}
+	}
+}
+
+func (m Model) handleConnectionsKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.ConnCursor > 0 {
+			m.ConnCursor--
+		}
+	case "down", "j":
+		if m.ConnCursor < 1 { // Only 2 options: Notion, Obsidian
+			m.ConnCursor++
+		}
+	case "enter":
+		if m.ConnCursor == 0 {
+			m.ConnProvider = "Notion"
+			if m.Config.NotionToken != "" && m.Config.NotionDatabaseID != "" {
+				m.Screen = ScreenConnectionNotes
+				m.Cursor = 0
+				m.Scroll = 0
+				return m, m.loadConnectionNotesCmd("Notion")
+			} else {
+				m.Screen = ScreenConnectionForm
+				m.ConnInputMode = 0
+				m.ConnInputToken.SetValue("")
+				m.ConnInputToken.EchoMode = textinput.EchoPassword
+				m.ConnInputToken.EchoCharacter = '*'
+				m.ConnInputToken.Focus()
+			}
+		} else {
+			m.ConnProvider = "Obsidian"
+			if m.Config.ObsidianVaultPath != "" {
+				m.Screen = ScreenConnectionNotes
+				m.Cursor = 0
+				m.Scroll = 0
+				return m, m.loadConnectionNotesCmd("Obsidian")
+			} else {
+				m.Screen = ScreenConnectionForm
+				m.ConnInputToken.SetValue("")
+				m.ConnInputToken.EchoMode = textinput.EchoNormal
+				m.ConnInputToken.Focus()
+			}
+		}
+	case "esc", "q":
+		m.Screen = ScreenDashboard
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) handleConnectionFormMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.Screen = ScreenConnections
+		return m, nil
+	case "enter":
+		if m.ConnProvider == "Notion" {
+			if m.ConnInputMode == 0 {
+				m.Config.NotionToken = m.ConnInputToken.Value()
+				m.ConnInputMode = 1
+				m.ConnInputID.SetValue("")
+				m.ConnInputToken.Blur()
+				m.ConnInputID.Focus()
+				return m, textinput.Blink
+			} else {
+				m.Config.NotionDatabaseID = m.ConnInputID.Value()
+				config.Save(m.Config)
+				// Note: requires app restart to initialize provider.
+				m.SuccessMsg = "Notion configurado. Por favor, reinicia la app para aplicar."
+				m.Screen = ScreenConnections
+				return m, nil
+			}
+		} else {
+			m.Config.ObsidianVaultPath = m.ConnInputToken.Value()
+			config.Save(m.Config)
+			m.SuccessMsg = "Obsidian configurado. Por favor, reinicia la app para aplicar."
+			m.Screen = ScreenConnections
+			return m, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	if m.ConnProvider == "Notion" && m.ConnInputMode == 1 {
+		m.ConnInputID, cmd = m.ConnInputID.Update(msg)
+	} else {
+		m.ConnInputToken, cmd = m.ConnInputToken.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m Model) handleConnectionNotesKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.Cursor > 0 {
+			m.Cursor--
+			if m.Cursor < m.Scroll {
+				m.Scroll = m.Cursor
+			}
+		}
+	case "down", "j":
+		if m.Cursor < len(m.ConnNotes)-1 {
+			m.Cursor++
+			visibleItems := (m.Height - 8)
+			if visibleItems < 3 {
+				visibleItems = 3
+			}
+			if m.Cursor >= m.Scroll+visibleItems {
+				m.Scroll++
+			}
+		}
+	case "enter":
+		if len(m.ConnNotes) > 0 {
+			selected := m.ConnNotes[m.Cursor]
+			m.SelectedNote = &selected
+			m.PrevScreen = ScreenConnectionNotes
+			m.Screen = ScreenNoteDetail
+			m.DetailScroll = 0
+		}
+	case "esc":
+		m.Screen = ScreenConnections
+		return m, nil
+	}
 	return m, nil
 }

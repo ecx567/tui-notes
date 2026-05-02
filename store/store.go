@@ -12,6 +12,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"notas/config"
 )
 
 type Note struct {
@@ -53,11 +55,13 @@ type TagStats struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	obsidian *ObsidianProvider
+	notion   *NotionProvider
 }
 
 // New initializes the SQLite database and performs automatic migration from JSON if present.
-func New(dbPath string) (*Store, error) {
+func New(dbPath string, cfg config.Config) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, err
 	}
@@ -68,6 +72,16 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	s := &Store{db: db}
+
+	if cfg.ObsidianVaultPath != "" {
+		s.obsidian = NewObsidianProvider(cfg.ObsidianVaultPath)
+		_ = s.obsidian.Init()
+	}
+
+	if cfg.NotionToken != "" && cfg.NotionDatabaseID != "" {
+		s.notion = NewNotionProvider(cfg.NotionToken, cfg.NotionDatabaseID)
+		_ = s.notion.Init()
+	}
 
 	if err := s.initSchema(); err != nil {
 		return nil, err
@@ -182,6 +196,13 @@ func (s *Store) SaveNote(title, content, status string) (Note, error) {
 }
 
 func (s *Store) UpdateNote(id int64, title, content string) error {
+	if s.notion != nil && id >= 20000000 {
+		return s.notion.UpdateNote(id, title, content, "saved", false, extractTags(title+" "+content))
+	}
+	if s.obsidian != nil && id >= 10000000 {
+		return s.obsidian.UpdateNote(id, title, content, "saved", false, extractTags(title+" "+content))
+	}
+
 	now := time.Now().Format(time.RFC3339)
 	tags := extractTags(title + " " + content)
 	tagsJSON, _ := json.Marshal(tags)
@@ -195,11 +216,23 @@ func (s *Store) UpdateNote(id int64, title, content string) error {
 }
 
 func (s *Store) DeleteNote(id int64) error {
+	if s.notion != nil && id >= 20000000 {
+		return s.notion.DeleteNote(id)
+	}
+	if s.obsidian != nil && id >= 10000000 {
+		return s.obsidian.DeleteNote(id)
+	}
 	_, err := s.db.Exec(`DELETE FROM notes WHERE id = ?`, id)
 	return err
 }
 
 func (s *Store) TogglePin(id int64) error {
+	if s.notion != nil && id >= 20000000 {
+		return s.notion.PinNote(id, true)
+	}
+	if s.obsidian != nil && id >= 10000000 {
+		return s.obsidian.PinNote(id, true) // Toggle logic needed if we ever support it in Obsidian
+	}
 	now := time.Now().Format(time.RFC3339)
 	_, err := s.db.Exec(`
 		UPDATE notes
@@ -226,6 +259,27 @@ func (s *Store) GetRecentNotes() []Note {
 			list = append(list, n)
 		}
 	}
+
+	if s.obsidian != nil {
+		obsNotes, _ := s.obsidian.GetNotes("", "")
+		list = append(list, obsNotes...)
+	}
+
+	if s.notion != nil {
+		notionNotes, _ := s.notion.GetNotes("", "")
+		list = append(list, notionNotes...)
+	}
+
+	if s.obsidian != nil || s.notion != nil {
+		// Re-sort everything since we merged sources
+		sort.SliceStable(list, func(i, j int) bool {
+			if list[i].Pinned != list[j].Pinned {
+				return list[i].Pinned
+			}
+			return list[i].UpdatedAt > list[j].UpdatedAt
+		})
+	}
+
 	return list
 }
 
@@ -262,6 +316,26 @@ func (s *Store) SearchNotes(query string) []Note {
 				}
 			}
 		}
+
+		if s.obsidian != nil {
+			obsNotes, _ := s.obsidian.GetNotes("", searchTag)
+			list = append(list, obsNotes...)
+		}
+
+		if s.notion != nil {
+			notionNotes, _ := s.notion.GetNotes("", searchTag)
+			list = append(list, notionNotes...)
+		}
+
+		if s.obsidian != nil || s.notion != nil {
+			sort.SliceStable(list, func(i, j int) bool {
+				if list[i].Pinned != list[j].Pinned {
+					return list[i].Pinned
+				}
+				return list[i].UpdatedAt > list[j].UpdatedAt
+			})
+		}
+
 		return list
 	}
 
@@ -282,10 +356,44 @@ func (s *Store) SearchNotes(query string) []Note {
 			}
 		}
 	}
+
+	if s.obsidian != nil {
+		obsNotes, _ := s.obsidian.GetNotes(q, "")
+		list = append(list, obsNotes...)
+	}
+
+	if s.notion != nil {
+		notionNotes, _ := s.notion.GetNotes(q, "")
+		list = append(list, notionNotes...)
+	}
+
+	if s.obsidian != nil || s.notion != nil {
+		sort.SliceStable(list, func(i, j int) bool {
+			if list[i].Pinned != list[j].Pinned {
+				return list[i].Pinned
+			}
+			return list[i].UpdatedAt > list[j].UpdatedAt
+		})
+	}
+
 	return list
 }
 
 func (s *Store) GetNote(id int64) (Note, bool) {
+	if s.notion != nil && id >= 20000000 {
+		n, err := s.notion.GetNoteByID(id)
+		if err != nil {
+			return Note{}, false
+		}
+		return *n, true
+	}
+	if s.obsidian != nil && id >= 10000000 && id < 20000000 {
+		n, err := s.obsidian.GetNoteByID(id)
+		if err != nil {
+			return Note{}, false
+		}
+		return *n, true
+	}
 	row := s.db.QueryRow(`SELECT id, title, content, status, pinned, tags, created_at, updated_at FROM notes WHERE id = ?`, id)
 	return scanNote(row)
 }
@@ -297,26 +405,39 @@ func (s *Store) GetStats() Stats {
 }
 
 func (s *Store) GetTags() []TagStats {
-	rows, err := s.db.Query(`SELECT tags FROM notes`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
+	var list []TagStats
 	tagMap := make(map[string]int)
-	for rows.Next() {
-		var tagsJSON string
-		if err := rows.Scan(&tagsJSON); err == nil {
-			var tags []string
-			if json.Unmarshal([]byte(tagsJSON), &tags) == nil {
-				for _, t := range tags {
-					tagMap[t]++
+
+	if s.obsidian != nil {
+		tags, _ := s.obsidian.GetTags()
+		for _, t := range tags {
+			tagMap[t.Name] += t.Count
+		}
+	}
+
+	if s.notion != nil {
+		tags, _ := s.notion.GetTags()
+		for _, t := range tags {
+			tagMap[t.Name] += t.Count
+		}
+	}
+
+	rows, err := s.db.Query(`SELECT tags FROM notes`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var tagsJSON string
+			if err := rows.Scan(&tagsJSON); err == nil {
+				var tags []string
+				if json.Unmarshal([]byte(tagsJSON), &tags) == nil {
+					for _, t := range tags {
+						tagMap[t]++
+					}
 				}
 			}
 		}
 	}
 
-	var list []TagStats
 	for k, v := range tagMap {
 		list = append(list, TagStats{Name: k, Count: v})
 	}

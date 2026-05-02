@@ -13,6 +13,7 @@ type Config struct {
 	Theme             string `json:"theme"`               // Color theme: "catppuccin", "dracula", "monokai"
 	ObsidianVaultPath string `json:"obsidian_vault_path"` // Path to local Obsidian vault
 	NotionToken       string `json:"notion_token"`        // Notion integration token
+	NotionDatabaseID  string `json:"notion_database_id"`  // Notion database ID to fetch notes from
 }
 
 // DefaultConfig returns the configuration with sensible defaults.
@@ -58,6 +59,11 @@ func Load() Config {
 		cfg.Theme = "catppuccin"
 	}
 
+	// Decrypt sensitive tokens
+	if decToken, err := Decrypt(cfg.NotionToken); err == nil {
+		cfg.NotionToken = decToken
+	}
+
 	return cfg
 }
 
@@ -68,7 +74,13 @@ func Save(cfg Config) error {
 		return err
 	}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	// Encrypt sensitive tokens before saving
+	clone := cfg // Value copy
+	if encToken, err := Encrypt(clone.NotionToken); err == nil {
+		clone.NotionToken = encToken
+	}
+
+	data, err := json.MarshalIndent(clone, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -92,6 +92,7 @@ func ApplyTheme(p config.Palette) {
 		BorderTop(false).
 		BorderLeft(false).
 		BorderRight(false).
+		PaddingBottom(1).
 		MarginBottom(1)
 	helpStyle = lipgloss.NewStyle().Foreground(colorSubtext).MarginTop(1)
 	errorStyle = lipgloss.NewStyle().Foreground(colorRed).Bold(true).Padding(0, 1)

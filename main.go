@@ -27,7 +27,7 @@ func main() {
 	config.EnsureExists()
 	cfg := config.Load()
 
-	s, err := store.New(dbPath)
+	s, err := store.New(dbPath, cfg)
 	if err != nil {
 		fmt.Printf("Error al inicializar la base de datos: %v\n", err)
 		os.Exit(1)

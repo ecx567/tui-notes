@@ -22,6 +22,9 @@ const (
 	ScreenEditorSelect
 	ScreenExportSelect
 	ScreenFileExplorer
+	ScreenConnections
+	ScreenConnectionForm
+	ScreenConnectionNotes
 )
 
 // Messages
@@ -35,6 +38,7 @@ type noteDetailMsg struct{ note store.Note }
 type noteSavedMsg struct{ note store.Note }
 type noteDeletedMsg struct{}
 type filesLoadedMsg struct{ files []os.DirEntry }
+type connectionNotesLoadedMsg struct{ notes []store.Note }
 type errMsg struct{ err error }
 type editorFinishedMsg struct {
 	id      int64
@@ -96,6 +100,14 @@ type Model struct {
 	FileOpMode       string // "" | "confirm_delete" | "rename" | "mkdir"
 	FileOpInput      textinput.Model
 	FileOpTarget     string // full path of the file/folder being operated on
+
+	// Connections
+	ConnCursor       int
+	ConnProvider     string // "notion" or "obsidian"
+	ConnInputToken   textinput.Model
+	ConnInputID      textinput.Model
+	ConnInputMode    int // 0 = Token/Path, 1 = DatabaseID (Notion only)
+	ConnNotes        []store.Note
 }
 
 func New(s *store.Store, cfg config.Config) Model {
@@ -123,6 +135,16 @@ func New(s *store.Store, cfg config.Config) Model {
 	fileOpInput.CharLimit = 255
 	fileOpInput.Width = 40
 
+	connTokenInput := textinput.New()
+	connTokenInput.Placeholder = "Token o Ruta..."
+	connTokenInput.CharLimit = 255
+	connTokenInput.Width = 60
+
+	connIDInput := textinput.New()
+	connIDInput.Placeholder = "Database ID (sólo Notion)..."
+	connIDInput.CharLimit = 255
+	connIDInput.Width = 60
+
 	return Model{
 		store:          s,
 		Config:         cfg,
@@ -133,6 +155,8 @@ func New(s *store.Store, cfg config.Config) Model {
 		ExportSelected: make(map[int64]bool),
 		FileOpInput:    fileOpInput,
 		CurrentPath:    cfg.ExplorerPath,
+		ConnInputToken: connTokenInput,
+		ConnInputID:    connIDInput,
 	}
 }
 
