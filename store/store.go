@@ -23,6 +23,8 @@ type Note struct {
 	Tags      []string `json:"tags"`
 	CreatedAt string   `json:"created_at"`
 	UpdatedAt string   `json:"updated_at"`
+	Source    string   `json:"source"`
+	OriginID  string   `json:"origin_id"`
 }
 
 var tagRegex = regexp.MustCompile(`(?i)#([a-z0-9_]+)`)
@@ -147,6 +149,7 @@ func scanNote(scanner Scanner) (Note, bool) {
 		return n, false
 	}
 	_ = json.Unmarshal([]byte(tagsJSON), &n.Tags)
+	n.Source = "local"
 	return n, true
 }
 
@@ -174,6 +177,7 @@ func (s *Store) SaveNote(title, content, status string) (Note, error) {
 		Tags:      tags,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Source:    "local",
 	}, nil
 }
 

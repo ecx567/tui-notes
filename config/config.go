@@ -8,9 +8,11 @@ import (
 
 // Config holds all user-configurable settings for tui-notes.
 type Config struct {
-	DefaultEditor string `json:"default_editor"` // Editor command (e.g. "nvim", "code")
-	ExplorerPath  string `json:"explorer_path"`  // Default directory for file explorer
-	Theme         string `json:"theme"`          // Color theme: "catppuccin", "dracula", "monokai"
+	DefaultEditor     string `json:"default_editor"`      // Editor command (e.g. "nvim", "code")
+	ExplorerPath      string `json:"explorer_path"`       // Default directory for file explorer
+	Theme             string `json:"theme"`               // Color theme: "catppuccin", "dracula", "monokai"
+	ObsidianVaultPath string `json:"obsidian_vault_path"` // Path to local Obsidian vault
+	NotionToken       string `json:"notion_token"`        // Notion integration token
 }
 
 // DefaultConfig returns the configuration with sensible defaults.

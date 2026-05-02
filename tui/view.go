@@ -127,7 +127,7 @@ func (m Model) viewSearch() string {
 
 		for i := m.Scroll; i < end; i++ {
 			r := m.SearchResults[i]
-			b.WriteString(m.renderNoteListItem(i, r.ID, r.Status, r.Title, r.Content, r.Tags, r.CreatedAt, r.Pinned))
+			b.WriteString(m.renderNoteListItem(i, r.ID, r.Status, r.Title, r.Content, r.Tags, r.CreatedAt, r.Pinned, r.Source))
 		}
 
 		if count > visibleItems {
@@ -195,11 +195,21 @@ func (m Model) viewExportSelect() string {
 				tagStr = " " + lipgloss.NewStyle().Foreground(colorTeal).Render(strings.Join(formattedTags, " "))
 			}
 
-			line := fmt.Sprintf("%s%s %s %s %s%s\n",
+			sourceBadge := ""
+			if r.Source == "obsidian" {
+				sourceBadge = lipgloss.NewStyle().Foreground(colorBlue).Render(" [OBS]")
+			} else if r.Source == "notion" {
+				sourceBadge = lipgloss.NewStyle().Foreground(colorMauve).Render(" [NOT]")
+			} else {
+				sourceBadge = lipgloss.NewStyle().Foreground(colorOverlay).Render(" [LOC]")
+			}
+
+			line := fmt.Sprintf("%s%s %s %s%s %s%s\n",
 				cursor,
 				checkbox,
 				idStyle.Render(fmt.Sprintf("#%-5d", r.ID)),
 				style.Render(truncateStr(r.Title, maxTitleLen)),
+				sourceBadge,
 				tagStr,
 				timestampStyle.Render(localTime(r.CreatedAt)))
 
@@ -231,10 +241,6 @@ func (m Model) viewRecent() string {
 
 	// Calculate max title width based on available space
 	leftWidth := (m.Width / 2) + 10
-	maxTitleLen := leftWidth - 30 // Reserve space for cursor, tags, timestamp
-	if maxTitleLen < 15 {
-		maxTitleLen = 15
-	}
 
 	visibleItems := (m.Height - 8)
 	if visibleItems < 3 {
@@ -261,20 +267,48 @@ func (m Model) viewRecent() string {
 			pinStr = lipgloss.NewStyle().Foreground(colorYellow).Render(" ★")
 		}
 
+		available := leftWidth - 36
+		if available < 10 {
+			available = 10
+		}
+		
+		maxTitle := int(float64(available) * 0.6)
+		maxTags := available - maxTitle
+
 		tagStr := ""
 		if len(o.Tags) > 0 {
 			var ft []string
 			for _, t := range o.Tags {
 				ft = append(ft, "#"+t)
 			}
-			tagStr = " " + lipgloss.NewStyle().Foreground(colorTeal).Render(strings.Join(ft, " "))
+			tagRaw := " " + strings.Join(ft, " ")
+			if len([]rune(tagRaw)) > maxTags {
+				if maxTags > 1 {
+					tagRaw = string([]rune(tagRaw)[:maxTags-1]) + "…"
+				} else {
+					tagRaw = ""
+				}
+			}
+			tagStr = lipgloss.NewStyle().Foreground(colorTeal).Render(tagRaw)
+		} else {
+			maxTitle = available
 		}
 
-		line := fmt.Sprintf("%s%s %s%s%s  %s\n",
+		sourceBadge := ""
+		if o.Source == "obsidian" {
+			sourceBadge = lipgloss.NewStyle().Foreground(colorBlue).Render(" [OBS]")
+		} else if o.Source == "notion" {
+			sourceBadge = lipgloss.NewStyle().Foreground(colorMauve).Render(" [NOT]")
+		} else {
+			sourceBadge = lipgloss.NewStyle().Foreground(colorOverlay).Render(" [LOC]")
+		}
+
+		line := fmt.Sprintf("%s%s %s%s%s%s  %s\n",
 			cursor,
 			idStyle.Render(fmt.Sprintf("#%-3d", o.ID)),
-			style.Render(truncateStr(o.Title, maxTitleLen)),
+			style.Render(truncateStr(o.Title, maxTitle)),
 			pinStr,
+			sourceBadge,
 			tagStr,
 			timestampStyle.Render(localTime(o.CreatedAt)))
 
@@ -326,6 +360,14 @@ func (m Model) viewNoteDetail() string {
 	}
 	b.WriteString("\n\n")
 
+	sourceStr := "Local"
+	if note.Source == "obsidian" {
+		sourceStr = "Obsidian"
+	} else if note.Source == "notion" {
+		sourceStr = "Notion"
+	}
+
+	b.WriteString(fmt.Sprintf("%s %s\n", detailLabelStyle.Render("Origen:"), typeBadgeStyle.Render(sourceStr)))
 	b.WriteString(fmt.Sprintf("%s %s\n", detailLabelStyle.Render("Estado:"), typeBadgeStyle.Render(note.Status)))
 	b.WriteString(fmt.Sprintf("%s %s\n", detailLabelStyle.Render("Título:"), detailValueStyle.Bold(true).Render(note.Title)))
 	b.WriteString(fmt.Sprintf("%s %s\n", detailLabelStyle.Render("Creado:"), timestampStyle.Render(localTime(note.CreatedAt))))
@@ -526,7 +568,7 @@ func (m Model) viewCreateNote() string {
 	return b.String()
 }
 
-func (m Model) renderNoteListItem(index int, id int64, status, title, content string, tags []string, createdAt string, pinned bool) string {
+func (m Model) renderNoteListItem(index int, id int64, status, title, content string, tags []string, createdAt string, pinned bool, source string) string {
 	cursor := "  "
 	style := listItemStyle
 	if index == m.Cursor {
@@ -548,12 +590,22 @@ func (m Model) renderNoteListItem(index int, id int64, status, title, content st
 		pinStr = lipgloss.NewStyle().Foreground(colorYellow).Render(" 📌")
 	}
 
-	line := fmt.Sprintf("%s%s %s %s%s%s  %s\n",
+	sourceBadge := ""
+	if source == "obsidian" {
+		sourceBadge = lipgloss.NewStyle().Foreground(colorBlue).Render(" [OBS]")
+	} else if source == "notion" {
+		sourceBadge = lipgloss.NewStyle().Foreground(colorMauve).Render(" [NOT]")
+	} else {
+		sourceBadge = lipgloss.NewStyle().Foreground(colorOverlay).Render(" [LOC]")
+	}
+
+	line := fmt.Sprintf("%s%s %s %s%s%s%s  %s\n",
 		cursor,
 		idStyle.Render(fmt.Sprintf("#%-5d", id)),
 		typeBadgeStyle.Render(fmt.Sprintf("[%-8s]", status)),
 		style.Render(truncateStr(title, 50)),
 		pinStr,
+		sourceBadge,
 		tagStr,
 		timestampStyle.Render(localTime(createdAt)))
 
